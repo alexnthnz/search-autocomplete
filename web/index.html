@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search Autocomplete Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .title {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #666;
+            font-size: 1.1rem;
+        }
+
+        .search-container {
+            position: relative;
+            margin-bottom: 30px;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 15px 20px;
+            font-size: 1.1rem;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            outline: none;
+            transition: all 0.3s ease;
+        }
+
+        .search-input:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .suggestions {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+            max-height: 300px;
+            overflow-y: auto;
+            z-index: 1000;
+            display: none;
+        }
+
+        .suggestion-item {
+            padding: 12px 20px;
+            cursor: pointer;
+            border-bottom: 1px solid #f0f0f0;
+            transition: background-color 0.2s ease;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .suggestion-item:last-child {
+            border-bottom: none;
+        }
+
+        .suggestion-item:hover {
+            background-color: #f8f9ff;
+        }
+
+        .suggestion-item.active {
+            background-color: #667eea;
+            color: white;
+        }
+
+        .suggestion-term {
+            font-weight: 500;
+        }
+
+        .suggestion-meta {
+            font-size: 0.9rem;
+            color: #999;
+            display: flex;
+            gap: 10px;
+        }
+
+        .suggestion-item.active .suggestion-meta {
+            color: rgba(255, 255, 255, 0.8);
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 30px;
+        }
+
+        .stat-card {
+            background: #f8f9ff;
+            padding: 20px;
+            border-radius: 12px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            color: #666;
+            font-size: 0.9rem;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error {
+            color: #e74c3c;
+            padding: 10px;
+            text-align: center;
+            font-size: 0.9rem;
+        }
+
+        .demo-info {
+            background: #f0f8ff;
+            border: 1px solid #d0e7ff;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 20px;
+            font-size: 0.9rem;
+            color: #0066cc;
+        }
+
+        .api-info {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f9f9f9;
+            border-radius: 12px;
+        }
+
+        .api-title {
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #333;
+        }
+
+        .api-endpoint {
+            background: #2d3748;
+            color: #e2e8f0;
+            padding: 10px 15px;
+            border-radius: 6px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 0.9rem;
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1 class="title">🔍 Search Autocomplete</h1>
+            <p class="subtitle">Real-time search suggestions with intelligent ranking</p>
+        </div>
+
+        <div class="search-container">
+            <input type="text" class="search-input" placeholder="Start typing to see suggestions..." autocomplete="off">
+            <div class="suggestions"></div>
+        </div>
+
+        <div class="demo-info">
+            <strong>Try these searches:</strong> app, apple, coding, computer, book, basketball, amazon
+        </div>
+
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-value" id="total-queries">0</div>
+                <div class="stat-label">Total Queries</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="cache-hits">0</div>
+                <div class="stat-label">Cache Hits</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="avg-latency">0ms</div>
+                <div class="stat-label">Avg Latency</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="suggestions-count">0</div>
+                <div class="stat-label">Suggestions</div>
+            </div>
+        </div>
+
+        <div class="api-info">
+            <div class="api-title">API Endpoints:</div>
+            <div class="api-endpoint">GET /api/v1/autocomplete?q=<query>&limit=10</div>
+            <div class="api-endpoint">POST /api/v1/autocomplete</div>
+            <div class="api-endpoint">GET /api/v1/health</div>
+            <div class="api-endpoint">GET /api/v1/stats</div>
+        </div>
+    </div>
+
+    <script>
+        class AutocompleteUI {
+            constructor() {
+                this.searchInput = document.querySelector('.search-input');
+                this.suggestionsContainer = document.querySelector('.suggestions');
+                this.debounceTimeout = null;
+                this.activeIndex = -1;
+                this.currentSuggestions = [];
+                
+                this.setupEventListeners();
+                this.loadStats();
+                
+                // Update stats periodically
+                setInterval(() => this.loadStats(), 5000);
+            }
+
+            setupEventListeners() {
+                this.searchInput.addEventListener('input', (e) => {
+                    const query = e.target.value.trim();
+                    this.debounceSearch(query);
+                });
+
+                this.searchInput.addEventListener('keydown', (e) => {
+                    this.handleKeyboard(e);
+                });
+
+                document.addEventListener('click', (e) => {
+                    if (!e.target.closest('.search-container')) {
+                        this.hideSuggestions();
+                    }
+                });
+            }
+
+            debounceSearch(query) {
+                clearTimeout(this.debounceTimeout);
+                
+                if (query.length === 0) {
+                    this.hideSuggestions();
+                    return;
+                }
+
+                this.debounceTimeout = setTimeout(() => {
+                    this.performSearch(query);
+                }, 150); // 150ms debounce
+            }
+
+            async performSearch(query) {
+                try {
+                    this.showLoading();
+                    
+                    const response = await fetch(`/api/v1/autocomplete?q=${encodeURIComponent(query)}&limit=8`);
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        this.displaySuggestions(data.suggestions, data);
+                    } else {
+                        this.showError(data.error || 'Search failed');
+                    }
+                } catch (error) {
+                    this.showError('Network error occurred');
+                    console.error('Search error:', error);
+                }
+            }
+
+            showLoading() {
+                this.suggestionsContainer.innerHTML = '<div style="padding: 20px; text-align: center;">Searching<span class="loading"></span></div>';
+                this.suggestionsContainer.style.display = 'block';
+            }
+
+            displaySuggestions(suggestions, metadata) {
+                if (!suggestions || suggestions.length === 0) {
+                    this.suggestionsContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">No suggestions found</div>';
+                    this.suggestionsContainer.style.display = 'block';
+                    return;
+                }
+
+                this.currentSuggestions = suggestions;
+                this.activeIndex = -1;
+
+                const html = suggestions.map((suggestion, index) => `
+                    <div class="suggestion-item" data-index="${index}">
+                        <span class="suggestion-term">${this.highlightMatch(suggestion.term, this.searchInput.value)}</span>
+                        <div class="suggestion-meta">
+                            <span>Score: ${Math.round(suggestion.score)}</span>
+                            ${suggestion.category ? `<span>${suggestion.category}</span>` : ''}
+                        </div>
+                    </div>
+                `).join('');
+
+                this.suggestionsContainer.innerHTML = html;
+                this.suggestionsContainer.style.display = 'block';
+
+                // Add click listeners
+                this.suggestionsContainer.querySelectorAll('.suggestion-item').forEach((item, index) => {
+                    item.addEventListener('click', () => {
+                        this.selectSuggestion(index);
+                    });
+                });
+
+                // Update page title with metadata
+                if (metadata.latency) {
+                    document.title = `Search Autocomplete (${metadata.latency})`;
+                }
+            }
+
+            highlightMatch(text, query) {
+                if (!query) return text;
+                
+                const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+                return text.replace(regex, '<strong style="background: #fff3cd;">$1</strong>');
+            }
+
+            showError(message) {
+                this.suggestionsContainer.innerHTML = `<div class="error">${message}</div>`;
+                this.suggestionsContainer.style.display = 'block';
+            }
+
+            hideSuggestions() {
+                this.suggestionsContainer.style.display = 'none';
+                this.activeIndex = -1;
+            }
+
+            handleKeyboard(e) {
+                const suggestions = this.suggestionsContainer.querySelectorAll('.suggestion-item');
+                
+                switch (e.key) {
+                    case 'ArrowDown':
+                        e.preventDefault();
+                        this.activeIndex = Math.min(this.activeIndex + 1, suggestions.length - 1);
+                        this.updateActiveSelection(suggestions);
+                        break;
+                        
+                    case 'ArrowUp':
+                        e.preventDefault();
+                        this.activeIndex = Math.max(this.activeIndex - 1, -1);
+                        this.updateActiveSelection(suggestions);
+                        break;
+                        
+                    case 'Enter':
+                        e.preventDefault();
+                        if (this.activeIndex >= 0) {
+                            this.selectSuggestion(this.activeIndex);
+                        }
+                        break;
+                        
+                    case 'Escape':
+                        this.hideSuggestions();
+                        this.searchInput.blur();
+                        break;
+                }
+            }
+
+            updateActiveSelection(suggestions) {
+                suggestions.forEach((item, index) => {
+                    item.classList.toggle('active', index === this.activeIndex);
+                });
+            }
+
+            selectSuggestion(index) {
+                if (index >= 0 && index < this.currentSuggestions.length) {
+                    const suggestion = this.currentSuggestions[index];
+                    this.searchInput.value = suggestion.term;
+                    this.hideSuggestions();
+                    
+                    // Simulate a search action
+                    console.log('Selected:', suggestion);
+                }
+            }
+
+            async loadStats() {
+                try {
+                    const response = await fetch('/api/v1/stats');
+                    const stats = await response.json();
+                    
+                    if (response.ok) {
+                        this.updateStatsDisplay(stats);
+                    }
+                } catch (error) {
+                    console.error('Failed to load stats:', error);
+                }
+            }
+
+            updateStatsDisplay(stats) {
+                const serviceStats = stats.service || {};
+                const trieStats = stats.trie || {};
+                
+                document.getElementById('total-queries').textContent = serviceStats.TotalQueries || 0;
+                document.getElementById('cache-hits').textContent = serviceStats.CacheHits || 0;
+                document.getElementById('suggestions-count').textContent = trieStats.suggestions_count || 0;
+                
+                if (serviceStats.AvgLatency) {
+                    const latencyMs = Math.round(serviceStats.AvgLatency / 1000000); // Convert from nanoseconds
+                    document.getElementById('avg-latency').textContent = `${latencyMs}ms`;
+                }
+            }
+        }
+
+        // Initialize the autocomplete UI when the page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            new AutocompleteUI();
+        });
+    </script>
+</body>
+</html> 

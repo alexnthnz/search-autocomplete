@@ -1,0 +1,217 @@
+package trie
+
+import (
+	"sort"
+	"strings"
+	"sync"
+
+	"github.com/alexnthnz/search-autocomplete/pkg/models"
+)
+
+// Trie represents the Trie data structure for autocomplete
+type Trie struct {
+	root  *models.TrieNode
+	mutex sync.RWMutex
+}
+
+// New creates a new Trie instance
+func New() *Trie {
+	return &Trie{
+		root: &models.TrieNode{
+			Children: make(map[rune]*models.TrieNode),
+		},
+	}
+}
+
+// Insert adds a suggestion to the Trie
+func (t *Trie) Insert(suggestion models.Suggestion) {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+
+	term := strings.ToLower(strings.TrimSpace(suggestion.Term))
+	if term == "" {
+		return
+	}
+
+	node := t.root
+	for _, char := range term {
+		if node.Children[char] == nil {
+			node.Children[char] = &models.TrieNode{
+				Children: make(map[rune]*models.TrieNode),
+			}
+		}
+		node = node.Children[char]
+		node.Frequency++
+	}
+
+	node.IsEndOfWord = true
+
+	// Add or update suggestion in the node
+	found := false
+	for i := range node.Suggestions {
+		if node.Suggestions[i].Term == suggestion.Term {
+			node.Suggestions[i] = suggestion
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		node.Suggestions = append(node.Suggestions, suggestion)
+	}
+
+	// Sort suggestions by score (descending)
+	sort.Slice(node.Suggestions, func(i, j int) bool {
+		return node.Suggestions[i].Score > node.Suggestions[j].Score
+	})
+}
+
+// Search finds suggestions for a given prefix
+func (t *Trie) Search(prefix string, limit int) []models.Suggestion {
+	t.mutex.RLock()
+	defer t.mutex.RUnlock()
+
+	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	if prefix == "" {
+		return []models.Suggestion{}
+	}
+
+	// Navigate to the prefix node
+	node := t.root
+	for _, char := range prefix {
+		if node.Children[char] == nil {
+			return []models.Suggestion{}
+		}
+		node = node.Children[char]
+	}
+
+	// Collect all suggestions from this node and its descendants
+	suggestions := make([]models.Suggestion, 0)
+	t.collectSuggestions(node, prefix, &suggestions)
+
+	// Sort by score and frequency
+	sort.Slice(suggestions, func(i, j int) bool {
+		if suggestions[i].Score == suggestions[j].Score {
+			return suggestions[i].Frequency > suggestions[j].Frequency
+		}
+		return suggestions[i].Score > suggestions[j].Score
+	})
+
+	// Apply limit
+	if limit > 0 && len(suggestions) > limit {
+		suggestions = suggestions[:limit]
+	}
+
+	return suggestions
+}
+
+// collectSuggestions recursively collects all suggestions from a node and its descendants
+func (t *Trie) collectSuggestions(node *models.TrieNode, currentWord string, suggestions *[]models.Suggestion) {
+	if node.IsEndOfWord {
+		*suggestions = append(*suggestions, node.Suggestions...)
+	}
+
+	for char, child := range node.Children {
+		t.collectSuggestions(child, currentWord+string(char), suggestions)
+	}
+}
+
+// GetSuggestionsCount returns the total number of unique suggestions in the trie
+func (t *Trie) GetSuggestionsCount() int {
+	t.mutex.RLock()
+	defer t.mutex.RUnlock()
+
+	count := 0
+	t.countSuggestions(t.root, &count)
+	return count
+}
+
+// countSuggestions recursively counts suggestions in the trie
+func (t *Trie) countSuggestions(node *models.TrieNode, count *int) {
+	if node.IsEndOfWord {
+		*count += len(node.Suggestions)
+	}
+
+	for _, child := range node.Children {
+		t.countSuggestions(child, count)
+	}
+}
+
+// Delete removes a suggestion from the Trie
+func (t *Trie) Delete(term string) bool {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+
+	term = strings.ToLower(strings.TrimSpace(term))
+	if term == "" {
+		return false
+	}
+
+	return t.deleteHelper(t.root, term, 0)
+}
+
+// deleteHelper is a recursive helper for deletion
+func (t *Trie) deleteHelper(node *models.TrieNode, term string, index int) bool {
+	if index == len(term) {
+		if !node.IsEndOfWord {
+			return false
+		}
+
+		node.IsEndOfWord = false
+		node.Suggestions = []models.Suggestion{}
+
+		// If node has no children, it can be deleted
+		return len(node.Children) == 0
+	}
+
+	char := rune(term[index])
+	child, exists := node.Children[char]
+	if !exists {
+		return false
+	}
+
+	shouldDeleteChild := t.deleteHelper(child, term, index+1)
+
+	if shouldDeleteChild {
+		delete(node.Children, char)
+		// Return true if current node has no children and is not end of another word
+		return len(node.Children) == 0 && !node.IsEndOfWord
+	}
+
+	return false
+}
+
+// UpdateFrequency updates the frequency of a term in the trie
+func (t *Trie) UpdateFrequency(term string, frequency int64) {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+
+	term = strings.ToLower(strings.TrimSpace(term))
+	if term == "" {
+		return
+	}
+
+	node := t.root
+	for _, char := range term {
+		if node.Children[char] == nil {
+			return // Term doesn't exist
+		}
+		node = node.Children[char]
+	}
+
+	if node.IsEndOfWord {
+		for i := range node.Suggestions {
+			if strings.ToLower(node.Suggestions[i].Term) == term {
+				node.Suggestions[i].Frequency = frequency
+				// Recalculate score based on frequency
+				node.Suggestions[i].Score = float64(frequency) * 1.0 // Simple scoring
+				break
+			}
+		}
+
+		// Re-sort suggestions
+		sort.Slice(node.Suggestions, func(i, j int) bool {
+			return node.Suggestions[i].Score > node.Suggestions[j].Score
+		})
+	}
+}
