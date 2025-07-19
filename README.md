@@ -7,30 +7,41 @@ A high-performance, scalable search autocomplete system built with Go, featuring
 ### Core Functionality
 - **Real-time Autocomplete**: Sub-100ms response times for search suggestions
 - **Intelligent Ranking**: Multi-factor scoring based on frequency, recency, and relevance
-- **Fuzzy Matching**: Handles typos and common misspellings
+- **Fuzzy Matching**: Handles typos and common misspellings with Levenshtein distance
 - **Prefix Matching**: Efficient Trie-based data structure for fast prefix searches
-- **Personalization**: User-specific suggestions based on search history (optional)
+- **Personalization**: User-specific suggestions based on search history and context
+- **Input Validation**: XSS/injection protection with comprehensive query sanitization
 
 ### Performance & Scalability
-- **High Throughput**: Handles millions of queries with rate limiting
-- **Multi-level Caching**: Redis + in-memory caching for optimal performance
-- **Horizontal Scaling**: Shardable architecture for large datasets
+- **High Throughput**: Handles millions of queries with token bucket rate limiting (100 req/s)
+- **Multi-level Caching**: Redis + in-memory LRU caching for optimal performance
+- **Database Persistence**: PostgreSQL integration for data durability and analytics
 - **Async Processing**: Non-blocking data pipeline for real-time updates
 - **Memory Optimization**: Compressed Trie structure with efficient memory usage
+- **Prometheus Metrics**: Comprehensive monitoring and observability
 
-### Data Processing
+### Data Processing & Analytics
 - **Real-time Analytics**: Live tracking of search patterns and trends
 - **Batch Processing**: Efficient bulk updates for suggestion data
 - **Trending Detection**: Automatic identification of popular search terms
 - **Category Classification**: Automatic categorization of search terms
-- **Frequency Updates**: Dynamic scoring based on search volume
+- **Search Logs**: Persistent logging with user session tracking
+- **Performance Metrics**: Query latency, cache hit ratios, and error tracking
 
-### API & Integration
+### Security & Reliability
+- **Input Sanitization**: Protection against XSS, injection, and malicious queries
+- **Structured Error Handling**: Custom error types with proper HTTP status codes
+- **API Key Authentication**: Secure admin endpoints with header-based auth
+- **CORS Configuration**: Configurable cross-origin resource sharing
+- **Health Monitoring**: Built-in health checks and service status endpoints
+- **Graceful Shutdown**: Proper resource cleanup and connection handling
+
+### Developer Experience
 - **RESTful API**: Clean, documented endpoints for easy integration
-- **Rate Limiting**: Configurable request throttling
-- **CORS Support**: Cross-origin resource sharing for web applications
-- **Health Monitoring**: Built-in health checks and metrics
+- **Docker Compose**: One-command local development setup with Redis
+- **Integration Tests**: Comprehensive test suite covering all endpoints (18 tests)
 - **Admin Interface**: Protected endpoints for suggestion management
+- **Web UI**: Interactive frontend for testing and demonstration
 
 ## 🏗️ Architecture
 
@@ -44,34 +55,44 @@ A high-performance, scalable search autocomplete system built with Go, featuring
 ┌────────────────────────────────┼──────────────────────────────────┐
 │                                │                                  │
 │  ┌─────────────────┐    ┌──────▼──────┐    ┌─────────────────┐    │
-│  │   Rate Limiter  │    │  API Server │    │   Monitoring    │    │
+│  │   Rate Limiter  │    │  API Server │    │   Prometheus    │    │
+│  │   (100 req/s)   │    │  (Gin + Auth)│    │   Monitoring    │    │
 │  └─────────────────┘    └──────┬──────┘    └─────────────────┘    │
 │                                │                                  │
 │  ┌─────────────────┐    ┌──────▼──────┐    ┌─────────────────┐    │
 │  │  Redis Cache    │◄───┤   Service   ├───►│  Data Pipeline  │    │
-│  └─────────────────┘    │   Layer     │    └─────────────────┘    │
-│                         └──────┬──────┘                           │
-│  ┌─────────────────┐           │                                  │
-│  │   Trie Index    │◄──────────┘                                  │
-│  └─────────────────┘                                              │
+│  │  (L2 Cache)     │    │   Layer     │    │  (Analytics)    │    │
+│  └─────────────────┘    │ (Validation)│    └──────┬──────────┘    │
+│                         └──────┬──────┘           │              │
+│  ┌─────────────────┐           │                  ▼              │
+│  │   Trie Index    │◄──────────┘          ┌─────────────────┐    │
+│  │  (In-Memory)    │                      │   PostgreSQL    │    │
+│  └─────────────────┘                      │   Database      │    │
+│                                           │ (Persistence)   │    │
+│                                           └─────────────────┘    │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
 ### Components
 
-1. **API Layer**: HTTP endpoints with middleware for authentication, rate limiting, and CORS
-2. **Service Layer**: Core business logic for autocomplete functionality
-3. **Trie Index**: In-memory prefix tree for fast suggestion retrieval
-4. **Cache Layer**: Redis + in-memory caching for frequently accessed data
-5. **Data Pipeline**: Asynchronous processing for search logs and trending analysis
-6. **Monitoring**: Health checks, metrics collection, and performance tracking
+1. **API Layer**: HTTP endpoints with Gin framework, JWT/API key auth, rate limiting, and CORS
+2. **Service Layer**: Core business logic with input validation and structured error handling
+3. **Trie Index**: Thread-safe in-memory prefix tree for fast suggestion retrieval
+4. **Cache Layer**: Multi-level caching (Redis L2 + in-memory L1) with intelligent invalidation
+5. **Data Pipeline**: Asynchronous processing for search logs, analytics, and trending detection
+6. **Database Layer**: PostgreSQL for persistent storage of suggestions and search analytics
+7. **Monitoring**: Prometheus metrics, health checks, and comprehensive observability
+8. **Security**: Input sanitization, XSS protection, and injection attack prevention
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 - Go 1.21+ 
-- Redis (optional, uses in-memory cache by default)
+- Docker & Docker Compose (recommended for local development)
+- PostgreSQL (optional, for persistent storage)
+- Redis (optional, for distributed caching)
 - Make (for build automation)
+- curl & jq (for API testing)
 
 ### Installation
 
@@ -80,6 +101,20 @@ A high-performance, scalable search autocomplete system built with Go, featuring
 git clone https://github.com/alexnthnz/search-autocomplete.git
 cd search-autocomplete
 ```
+
+### Quick Start with Docker Compose (Recommended)
+
+2. **Start with Docker Compose** (includes Redis)
+```bash
+make docker-compose-up
+```
+
+This will start:
+- Autocomplete service on `http://localhost:8080`
+- Redis cache on `localhost:6379`
+- Web interface at `http://localhost:8080`
+
+### Manual Installation
 
 2. **Install dependencies**
 ```bash
@@ -93,15 +128,35 @@ make run
 
 The service will start on `http://localhost:8080` with a web interface available at the root URL.
 
-### Using Docker
+### Alternative Docker Methods
 
 ```bash
-# Build and run with Docker
+# Build and run single container
 make docker-run
 
-# Or use docker-compose (includes Redis)
-make docker-compose-up
+# Stop Docker Compose
+make docker-compose-down
 ```
+
+## 🔒 Security Features
+
+### Input Validation & Sanitization
+- **Query Validation**: Prevents XSS, injection attacks, and malicious input
+- **Length Limits**: Query length capped at 100 characters
+- **Character Filtering**: Only allows alphanumeric, spaces, hyphens, underscores, dots
+- **Pattern Blocking**: Blocks script tags, SQL injection, and template injection patterns
+- **Unicode Normalization**: Proper handling of international characters
+
+### Authentication & Authorization
+- **API Key Authentication**: Secure admin endpoints with `X-API-Key` header
+- **Rate Limiting**: Token bucket algorithm (100 req/s with 200 burst)
+- **CORS Configuration**: Configurable cross-origin resource sharing
+- **Input Sanitization**: Automatic cleanup of dangerous characters
+
+### Error Handling
+- **Structured Errors**: Custom error types with proper HTTP status codes
+- **Security-first**: No sensitive information leaked in error responses
+- **Graceful Degradation**: Fallback behavior when services are unavailable
 
 ## 🔧 Configuration
 
@@ -111,16 +166,24 @@ make docker-compose-up
 |----------|---------|-------------|
 | `PORT` | `8080` | Server port |
 | `LOG_LEVEL` | `info` | Logging level (debug, info, warn, error) |
-| `API_KEY` | - | API key for admin endpoints |
+| `API_KEY` | - | API key for admin endpoints (required for production) |
 | `ENABLE_CORS` | `true` | Enable CORS headers |
 | `CACHE_ENABLED` | `true` | Enable caching layer |
 | `CACHE_TTL` | `5m` | Cache time-to-live |
-| `REDIS_ENABLED` | `false` | Use Redis for caching |
+| `REDIS_ENABLED` | `false` | Use Redis for distributed caching |
 | `REDIS_HOST` | `localhost` | Redis server host |
 | `REDIS_PORT` | `6379` | Redis server port |
+| `REDIS_PASSWORD` | - | Redis password (if required) |
 | `ENABLE_FUZZY` | `true` | Enable fuzzy matching |
 | `FUZZY_THRESHOLD` | `2` | Levenshtein distance threshold |
 | `MAX_SUGGESTIONS` | `10` | Maximum suggestions per query |
+| `POSTGRES_ENABLED` | `false` | Enable PostgreSQL persistence |
+| `POSTGRES_HOST` | `localhost` | PostgreSQL server host |
+| `POSTGRES_PORT` | `5432` | PostgreSQL server port |
+| `POSTGRES_USER` | `postgres` | PostgreSQL username |
+| `POSTGRES_PASSWORD` | - | PostgreSQL password |
+| `POSTGRES_DB` | `autocomplete` | PostgreSQL database name |
+| `METRICS_ENABLED` | `true` | Enable Prometheus metrics |
 
 ### Configuration File
 
@@ -222,6 +285,19 @@ Service statistics and metrics.
 }
 ```
 
+#### GET /metrics
+Prometheus metrics endpoint (if metrics enabled).
+
+**Response:**
+```
+# HELP autocomplete_requests_total Total number of autocomplete requests
+# TYPE autocomplete_requests_total counter
+autocomplete_requests_total{method="GET",endpoint="/api/v1/autocomplete",status="200"} 1250
+autocomplete_cache_hits_total{cache_type="redis"} 800
+autocomplete_trie_size 10000
+...
+```
+
 ### Admin Endpoints (API Key Required)
 
 Include `X-API-Key` header with your API key.
@@ -271,10 +347,19 @@ Delete a suggestion.
 
 ## 🧪 Testing
 
-### Running Tests
+### Comprehensive Test Suite
+The project includes **18 integration tests** covering all endpoints and functionality:
+
 ```bash
-# Run all tests
+# Run all tests (unit + integration)
 make test
+
+# Run integration tests specifically  
+go test ./test/ -v
+
+# Run unit tests for specific components
+go test ./internal/trie/ -v
+go test ./pkg/utils/ -v
 
 # Run tests with coverage
 make test-coverage
@@ -283,15 +368,25 @@ make test-coverage
 make benchmark
 ```
 
+### Test Coverage
+- ✅ **API Endpoints** (18 tests): All GET/POST/PUT/DELETE endpoints
+- ✅ **Authentication**: API key validation and unauthorized access
+- ✅ **Input Validation**: XSS protection and malicious input handling  
+- ✅ **Rate Limiting**: Request throttling and burst handling
+- ✅ **Caching**: Cache effectiveness and invalidation
+- ✅ **CORS**: Cross-origin request handling
+- ✅ **Error Handling**: Proper HTTP status codes and error messages
+- ✅ **Fuzzy Search**: Typo tolerance and similarity matching
+
 ### API Testing
 ```bash
-# Test all endpoints
+# Test all endpoints with sample data
 make test-api
 
-# Load sample data
+# Load sample data for manual testing
 make load-sample-data
 
-# Run stress test
+# Run stress test (100 concurrent requests)
 make stress-test
 ```
 
@@ -332,27 +427,57 @@ The frontend implements 150ms debouncing to reduce API calls during typing.
 
 ## 📊 Monitoring & Observability
 
-### Metrics Collected
-- Query latency (p50, p95, p99)
-- Cache hit ratio
-- Request rate and error rate
-- Memory usage and GC statistics
-- Trending queries and patterns
+### Prometheus Metrics
+Comprehensive metrics collection for production monitoring:
+
+- **Request Metrics**: Total requests, duration histograms, active requests
+- **Cache Metrics**: Hit/miss ratios, operation latency by cache type
+- **Trie Metrics**: Search operations, insertions, deletions, size tracking
+- **Pipeline Metrics**: Processing latency, queue size, throughput
+- **Error Metrics**: Error counts by type and component
+- **Fuzzy Search**: Usage patterns and match rates
+
+### Available Metrics Endpoints
+```bash
+# Service statistics (JSON)
+curl http://localhost:8080/api/v1/stats
+
+# Prometheus metrics (if enabled)
+curl http://localhost:8080/metrics
+
+# Health check
+curl http://localhost:8080/api/v1/health
+```
+
+### Monitoring Dashboard Setup
+```bash
+# Example Prometheus configuration
+scrape_configs:
+  - job_name: 'autocomplete'
+    static_configs:
+      - targets: ['localhost:8080']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+```
 
 ### Health Checks
-- API endpoint health
-- Cache connectivity
-- Memory usage thresholds
-- Response time monitoring
+- **API Endpoint Health**: Service availability and response time
+- **Cache Connectivity**: Redis/in-memory cache status  
+- **Database Status**: PostgreSQL connection health (if enabled)
+- **Memory Usage**: Trie size and memory consumption
+- **Rate Limiting**: Current request rates and burst capacity
 
-### Logging
-Structured JSON logging with configurable levels:
+### Structured Logging
+JSON-formatted logs with configurable levels and structured fields:
 ```bash
-# Development
+# Development (verbose logging)
 LOG_LEVEL=debug make dev
 
-# Production  
+# Production (error/warn only)
 LOG_LEVEL=warn make run-prod
+
+# Log format example
+{"level":"info","msg":"HTTP Request","method":"GET","path":"/api/v1/autocomplete","ip":"127.0.0.1","latency":"2.5ms","status":200,"time":"2024-01-15T10:30:00Z"}
 ```
 
 ## 🚀 Deployment
@@ -382,15 +507,31 @@ docker-compose up --build
 
 **Development:**
 - Debug logging enabled
-- CORS enabled
-- In-memory cache
-- Sample data loaded
+- CORS enabled for all origins
+- In-memory cache fallback
+- Sample data auto-loaded
+- Integration tests enabled
 
 **Production:**
-- Warn-level logging
-- Redis caching
-- Rate limiting enforced
-- Monitoring enabled
+- Warn-level logging only
+- Redis distributed caching
+- PostgreSQL persistence
+- Prometheus metrics enabled
+- API key authentication required
+- Rate limiting enforced (100 req/s)
+- Input validation and sanitization
+
+### Production Deployment Checklist
+- [ ] Set `API_KEY` environment variable
+- [ ] Configure PostgreSQL connection
+- [ ] Enable Redis for distributed caching
+- [ ] Set `LOG_LEVEL=warn` or `LOG_LEVEL=error`
+- [ ] Configure Prometheus metrics collection
+- [ ] Set up health check monitoring
+- [ ] Configure CORS for specific origins
+- [ ] Enable HTTPS/TLS termination
+- [ ] Set resource limits (CPU/Memory)
+- [ ] Configure log aggregation (ELK/Fluentd)
 
 ## 🤝 Contributing
 
@@ -410,21 +551,32 @@ docker-compose up --build
 
 ## 📈 Roadmap
 
+### Recently Implemented ✅
+- ✅ **Security & Validation**: XSS protection, input sanitization, structured errors
+- ✅ **Database Persistence**: PostgreSQL integration with analytics tables
+- ✅ **Prometheus Metrics**: Comprehensive monitoring and observability
+- ✅ **Docker Compose**: One-command development setup with Redis
+- ✅ **Integration Tests**: 18 comprehensive tests covering all endpoints
+- ✅ **Rate Limiting**: Token bucket algorithm (100 req/s with burst)
+- ✅ **Structured Logging**: JSON-formatted logs with configurable levels
+
 ### Planned Features
 - [ ] **Machine Learning Integration**: ML-based ranking models
-- [ ] **Multi-language Support**: Unicode and international queries
-- [ ] **Analytics Dashboard**: Web-based monitoring interface
+- [ ] **Multi-language Support**: Unicode normalization and international queries
+- [ ] **Analytics Dashboard**: Web-based monitoring interface with charts
 - [ ] **A/B Testing Framework**: Experiment with different ranking algorithms
 - [ ] **Geolocation Awareness**: Location-based suggestions
-- [ ] **Advanced Personalization**: User behavior modeling
+- [ ] **Advanced Personalization**: User behavior modeling with ML
 - [ ] **Voice Search Support**: Audio input processing
-- [ ] **Federated Search**: Integration with external data sources
+- [ ] **JWT Authentication**: Replace API key auth with JWT tokens
+- [ ] **GraphQL API**: Alternative to REST endpoints
 
-### Performance Improvements
+### Performance Improvements  
 - [ ] **Distributed Trie**: Sharded across multiple nodes
 - [ ] **GPU Acceleration**: CUDA-based similarity matching
 - [ ] **Edge Computing**: Deploy to CDN edge locations
 - [ ] **Streaming Updates**: Real-time suggestion updates via WebSocket
+- [ ] **Circuit Breaker**: Fault tolerance for external dependencies
 
 ## 🐛 Troubleshooting
 
