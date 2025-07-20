@@ -71,8 +71,11 @@ docker-build: ## Build Docker image
 docker-run: docker-build ## Run in Docker container
 	docker run -p 8080:8080 --env-file $(CONFIG_FILE) $(DOCKER_IMAGE)
 
-docker-compose-up: ## Start with docker-compose (includes Redis)
+docker-compose-up: ## Start with docker-compose (in-memory cache only)
 	docker-compose up --build
+
+docker-compose-up-redis: ## Start with docker-compose (includes Redis)
+	docker-compose -f docker-compose.yml -f docker-compose.redis.yml up --build
 
 docker-compose-down: ## Stop docker-compose services
 	docker-compose down

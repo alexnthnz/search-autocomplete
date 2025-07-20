@@ -1,0 +1,10 @@
+services:
+  autocomplete:
+    environment:
+      - REDIS_ENABLED=true
+      - REDIS_HOST=redis
+    depends_on:
+      - redis
+
+  redis:
+    profiles: [] 

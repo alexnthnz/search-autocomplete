@@ -15,6 +15,8 @@ import (
 
 	"github.com/alexnthnz/search-autocomplete/internal/api"
 	"github.com/alexnthnz/search-autocomplete/internal/cache"
+	"github.com/alexnthnz/search-autocomplete/internal/metrics"
+	"github.com/alexnthnz/search-autocomplete/internal/pipeline"
 	"github.com/alexnthnz/search-autocomplete/internal/service"
 	"github.com/alexnthnz/search-autocomplete/pkg/models"
 )
@@ -24,6 +26,7 @@ type IntegrationTestSuite struct {
 	router   *gin.Engine
 	service  *service.AutocompleteService
 	handler  *api.Handler
+	pipeline *pipeline.DataPipeline
 	testData []models.Suggestion
 }
 
@@ -34,6 +37,9 @@ func TestIntegrationSuite(t *testing.T) {
 func (s *IntegrationTestSuite) SetupSuite() {
 	// Set gin to test mode
 	gin.SetMode(gin.TestMode)
+
+	// Create shared metrics instance for testing
+	sharedMetrics := metrics.NewMetrics()
 
 	// Create test service with in-memory cache
 	config := service.Config{
@@ -46,11 +52,19 @@ func (s *IntegrationTestSuite) SetupSuite() {
 
 	logger := logrus.New()
 	logger.SetLevel(logrus.FatalLevel) // Suppress logs during tests
-	cacheInstance := cache.NewInMemoryCache(5*time.Minute, logger)
-	s.service = service.NewAutocompleteService(config, cacheInstance, logger)
+	cacheInstance := cache.NewInMemoryCache(5*time.Minute, logger, sharedMetrics)
+	s.service = service.NewAutocompleteService(config, cacheInstance, logger, sharedMetrics)
+
+	// Create pipeline for testing
+	pipelineConfig := pipeline.Config{
+		BatchSize:     100,
+		FlushInterval: 30 * time.Second,
+		QueueSize:     1000,
+	}
+	s.pipeline = pipeline.NewDataPipeline(s.service, pipelineConfig, logger, sharedMetrics)
 
 	// Create handler and router
-	s.handler = api.NewHandler(s.service, logger)
+	s.handler = api.NewHandler(s.service, s.pipeline, logger, sharedMetrics)
 	s.router = api.SetupRouter(s.handler, "test-api-key", true)
 
 	// Prepare test data
@@ -341,7 +355,7 @@ func (s *IntegrationTestSuite) TestAdminEndpoints() {
 		var response map[string]interface{}
 		err := json.Unmarshal(w.Body.Bytes(), &response)
 		s.NoError(err)
-		s.Equal("Suggestion not found", response["error"])
+		s.Equal("suggestion not found", response["message"])
 	})
 
 	s.Run("Delete existing suggestion", func() {

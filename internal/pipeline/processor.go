@@ -9,6 +9,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	"github.com/alexnthnz/search-autocomplete/internal/metrics"
 	"github.com/alexnthnz/search-autocomplete/internal/service"
 	"github.com/alexnthnz/search-autocomplete/pkg/models"
 )
@@ -24,6 +25,7 @@ type DataPipeline struct {
 	flushInterval time.Duration
 	stopChan      chan struct{}
 	wg            sync.WaitGroup
+	metrics       *metrics.Metrics
 }
 
 // Config holds pipeline configuration
@@ -34,7 +36,7 @@ type Config struct {
 }
 
 // NewDataPipeline creates a new data processing pipeline
-func NewDataPipeline(service *service.AutocompleteService, config Config, logger *logrus.Logger) *DataPipeline {
+func NewDataPipeline(service *service.AutocompleteService, config Config, logger *logrus.Logger, metricsInstance *metrics.Metrics) *DataPipeline {
 	if config.BatchSize <= 0 {
 		config.BatchSize = 100
 	}
@@ -53,6 +55,7 @@ func NewDataPipeline(service *service.AutocompleteService, config Config, logger
 		batchSize:     config.BatchSize,
 		flushInterval: config.FlushInterval,
 		stopChan:      make(chan struct{}),
+		metrics:       metricsInstance,
 	}
 }
 
@@ -85,9 +88,12 @@ func (p *DataPipeline) Stop() {
 func (p *DataPipeline) LogQuery(log models.SearchLog) error {
 	select {
 	case p.logQueue <- log:
+		// Update queue size metric
+		p.metrics.UpdatePipelineQueueSize(len(p.logQueue))
 		return nil
 	default:
 		p.logger.Warn("Log queue is full, dropping log")
+		p.metrics.RecordError("pipeline", "queue_full")
 		return fmt.Errorf("log queue is full")
 	}
 }
@@ -129,6 +135,7 @@ func (p *DataPipeline) processBatch(logs []models.SearchLog) {
 		return
 	}
 
+	start := time.Now()
 	p.logger.WithField("count", len(logs)).Debug("Processing log batch")
 
 	queryFreq := make(map[string]int64)
@@ -150,6 +157,11 @@ func (p *DataPipeline) processBatch(logs []models.SearchLog) {
 
 	// Extract and add new suggestions from queries
 	p.extractNewSuggestions(queryFreq)
+
+	// Record processing metrics
+	p.metrics.RecordPipelineProcessed("batch")
+	p.metrics.RecordPipelineLatency("batch", time.Since(start))
+	p.metrics.UpdatePipelineQueueSize(len(p.logQueue))
 }
 
 // updateFrequencies periodically updates suggestion frequencies
@@ -175,6 +187,8 @@ func (p *DataPipeline) updateFrequencies(ctx context.Context) {
 
 // flushFrequencyUpdates applies accumulated frequency updates
 func (p *DataPipeline) flushFrequencyUpdates() {
+	start := time.Now()
+
 	p.freqMutex.Lock()
 	updates := make(map[string]int64)
 	for query, count := range p.freqUpdates {
@@ -192,6 +206,10 @@ func (p *DataPipeline) flushFrequencyUpdates() {
 	for query, count := range updates {
 		p.service.UpdateFrequency(query, count)
 	}
+
+	// Record flush metrics
+	p.metrics.RecordPipelineProcessed("frequency_flush")
+	p.metrics.RecordPipelineLatency("frequency_flush", time.Since(start))
 }
 
 // extractNewSuggestions identifies potential new suggestions from search queries
@@ -232,16 +250,6 @@ func (p *DataPipeline) detectTrending(ctx context.Context) {
 			return
 		case <-p.stopChan:
 			return
-		case log := <-p.logQueue:
-			query := normalizeQuery(log.Query)
-			if query == "" {
-				continue
-			}
-
-			mutex.Lock()
-			recentQueries[query] = append(recentQueries[query], log.Timestamp)
-			mutex.Unlock()
-
 		case <-ticker.C:
 			p.analyzeTrends(recentQueries, &mutex)
 		}

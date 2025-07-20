@@ -14,6 +14,7 @@ import (
 
 	"github.com/alexnthnz/search-autocomplete/internal/api"
 	"github.com/alexnthnz/search-autocomplete/internal/cache"
+	"github.com/alexnthnz/search-autocomplete/internal/metrics"
 	"github.com/alexnthnz/search-autocomplete/internal/pipeline"
 	"github.com/alexnthnz/search-autocomplete/internal/service"
 )
@@ -37,6 +38,9 @@ func main() {
 	// Load configuration from environment variables
 	config := loadConfig()
 
+	// Create shared metrics instance first
+	sharedMetrics := metrics.NewMetrics()
+
 	// Initialize cache
 	var cacheInstance cache.Cache
 	if config.CacheEnabled {
@@ -48,10 +52,10 @@ func main() {
 				DB:       config.RedisDB,
 				TTL:      config.CacheTTL,
 			}
-			cacheInstance = cache.NewRedisCache(redisConfig, logger)
+			cacheInstance = cache.NewRedisCache(redisConfig, logger, sharedMetrics)
 			logger.Info("Using Redis cache")
 		} else {
-			cacheInstance = cache.NewInMemoryCache(config.CacheTTL, logger)
+			cacheInstance = cache.NewInMemoryCache(config.CacheTTL, logger, sharedMetrics)
 			logger.Info("Using in-memory cache")
 		}
 	}
@@ -65,7 +69,7 @@ func main() {
 		PersonalizedRec: config.PersonalizedRec,
 	}
 
-	autocompleteService := service.NewAutocompleteService(serviceConfig, cacheInstance, logger)
+	autocompleteService := service.NewAutocompleteService(serviceConfig, cacheInstance, logger, sharedMetrics)
 
 	// Load sample data
 	autocompleteService.LoadSampleData()
@@ -77,7 +81,7 @@ func main() {
 		QueueSize:     config.PipelineQueueSize,
 	}
 
-	dataPipeline := pipeline.NewDataPipeline(autocompleteService, pipelineConfig, logger)
+	dataPipeline := pipeline.NewDataPipeline(autocompleteService, pipelineConfig, logger, sharedMetrics)
 
 	// Start data pipeline
 	ctx, cancel := context.WithCancel(context.Background())
@@ -90,7 +94,7 @@ func main() {
 	go dataPipeline.LoadHistoricalData()
 
 	// Initialize API handler and router
-	apiHandler := api.NewHandler(autocompleteService, logger)
+	apiHandler := api.NewHandler(autocompleteService, dataPipeline, logger, sharedMetrics)
 	router := api.SetupRouter(apiHandler, config.APIKey, config.EnableCORS)
 
 	// Create HTTP server

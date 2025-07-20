@@ -5,13 +5,16 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/alexnthnz/search-autocomplete/internal/metrics"
 	"github.com/alexnthnz/search-autocomplete/pkg/models"
 )
 
 // Trie represents the Trie data structure for autocomplete
 type Trie struct {
-	root  *models.TrieNode
-	mutex sync.RWMutex
+	root    *models.TrieNode
+	mutex   sync.RWMutex
+	metrics *metrics.Metrics
+	size    int // Track number of suggestions
 }
 
 // New creates a new Trie instance
@@ -20,6 +23,19 @@ func New() *Trie {
 		root: &models.TrieNode{
 			Children: make(map[rune]*models.TrieNode),
 		},
+		metrics: nil, // No metrics for backward compatibility
+		size:    0,
+	}
+}
+
+// NewWithMetrics creates a new Trie instance with provided metrics
+func NewWithMetrics(metrics *metrics.Metrics) *Trie {
+	return &Trie{
+		root: &models.TrieNode{
+			Children: make(map[rune]*models.TrieNode),
+		},
+		metrics: metrics,
+		size:    0,
 	}
 }
 
@@ -44,6 +60,9 @@ func (t *Trie) Insert(suggestion models.Suggestion) {
 		node.Frequency++
 	}
 
+	// Check if this is a new suggestion
+	isNewSuggestion := !node.IsEndOfWord
+
 	node.IsEndOfWord = true
 
 	// Add or update suggestion in the node
@@ -58,12 +77,21 @@ func (t *Trie) Insert(suggestion models.Suggestion) {
 
 	if !found {
 		node.Suggestions = append(node.Suggestions, suggestion)
+		if isNewSuggestion {
+			t.size++
+		}
 	}
 
 	// Sort suggestions by score (descending)
 	sort.Slice(node.Suggestions, func(i, j int) bool {
 		return node.Suggestions[i].Score > node.Suggestions[j].Score
 	})
+
+	// Record metrics
+	if t.metrics != nil {
+		t.metrics.RecordTrieInsert()
+		t.metrics.UpdateTrieSize(t.size)
+	}
 }
 
 // Search finds suggestions for a given prefix
@@ -80,26 +108,31 @@ func (t *Trie) Search(prefix string, limit int) []models.Suggestion {
 	node := t.root
 	for _, char := range prefix {
 		if node.Children[char] == nil {
+			// Record search with zero results
+			if t.metrics != nil {
+				t.metrics.RecordTrieSearch(0)
+			}
 			return []models.Suggestion{}
 		}
 		node = node.Children[char]
 	}
 
-	// Collect all suggestions from this node and its descendants
-	suggestions := make([]models.Suggestion, 0)
+	// Collect suggestions from this node and its descendants
+	var suggestions []models.Suggestion
 	t.collectSuggestions(node, prefix, &suggestions)
 
-	// Sort by score and frequency
+	// Sort by score (descending) and limit results
 	sort.Slice(suggestions, func(i, j int) bool {
-		if suggestions[i].Score == suggestions[j].Score {
-			return suggestions[i].Frequency > suggestions[j].Frequency
-		}
 		return suggestions[i].Score > suggestions[j].Score
 	})
 
-	// Apply limit
-	if limit > 0 && len(suggestions) > limit {
+	if len(suggestions) > limit {
 		suggestions = suggestions[:limit]
+	}
+
+	// Record search metrics with result count
+	if t.metrics != nil {
+		t.metrics.RecordTrieSearch(len(suggestions))
 	}
 
 	return suggestions
@@ -147,7 +180,17 @@ func (t *Trie) Delete(term string) bool {
 		return false
 	}
 
-	return t.deleteHelper(t.root, term, 0)
+	deleted := t.deleteHelper(t.root, term, 0)
+
+	if deleted {
+		t.size--
+		if t.metrics != nil {
+			t.metrics.RecordTrieDelete()
+			t.metrics.UpdateTrieSize(t.size)
+		}
+	}
+
+	return deleted
 }
 
 // deleteHelper is a recursive helper for deletion

@@ -1,10 +1,16 @@
 package metrics
 
 import (
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+var (
+	metricsInstance *Metrics
+	metricsOnce     sync.Once
 )
 
 // Metrics holds all Prometheus metrics
@@ -38,133 +44,132 @@ type Metrics struct {
 	ErrorsTotal *prometheus.CounterVec
 }
 
-// NewMetrics creates a new metrics instance
+// NewMetrics creates a new metrics instance (singleton)
 func NewMetrics() *Metrics {
-	return &Metrics{
-		RequestsTotal: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "autocomplete_requests_total",
-				Help: "Total number of autocomplete requests",
-			},
-			[]string{"method", "endpoint", "status"},
-		),
+	metricsOnce.Do(func() {
+		metricsInstance = &Metrics{
+			// Request metrics
+			RequestsTotal: promauto.NewCounterVec(
+				prometheus.CounterOpts{
+					Name: "autocomplete_requests_total",
+					Help: "Total number of autocomplete requests",
+				},
+				[]string{"method", "endpoint", "status"},
+			),
+			RequestDuration: promauto.NewHistogramVec(
+				prometheus.HistogramOpts{
+					Name:    "autocomplete_request_duration_seconds",
+					Help:    "Duration of autocomplete requests",
+					Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+				},
+				[]string{"method", "endpoint"},
+			),
+			ActiveRequests: promauto.NewGauge(
+				prometheus.GaugeOpts{
+					Name: "autocomplete_active_requests",
+					Help: "Number of active requests",
+				},
+			),
 
-		RequestDuration: promauto.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Name:    "autocomplete_request_duration_seconds",
-				Help:    "Duration of autocomplete requests",
-				Buckets: prometheus.DefBuckets,
-			},
-			[]string{"method", "endpoint"},
-		),
+			// Cache metrics
+			CacheHitsTotal: promauto.NewCounterVec(
+				prometheus.CounterOpts{
+					Name: "autocomplete_cache_hits_total",
+					Help: "Total number of cache hits",
+				},
+				[]string{"cache_type"},
+			),
+			CacheMissesTotal: promauto.NewCounterVec(
+				prometheus.CounterOpts{
+					Name: "autocomplete_cache_misses_total",
+					Help: "Total number of cache misses",
+				},
+				[]string{"cache_type"},
+			),
+			CacheOperations: promauto.NewHistogramVec(
+				prometheus.HistogramOpts{
+					Name:    "autocomplete_cache_operation_duration_seconds",
+					Help:    "Duration of cache operations",
+					Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1},
+				},
+				[]string{"operation", "cache_type"},
+			),
 
-		ActiveRequests: promauto.NewGauge(
-			prometheus.GaugeOpts{
-				Name: "autocomplete_active_requests",
-				Help: "Number of active requests",
-			},
-		),
+			// Trie metrics
+			TrieSearches: promauto.NewCounterVec(
+				prometheus.CounterOpts{
+					Name: "autocomplete_trie_searches_total",
+					Help: "Total number of trie searches",
+				},
+				[]string{"result_count"},
+			),
+			TrieInserts: promauto.NewCounter(
+				prometheus.CounterOpts{
+					Name: "autocomplete_trie_inserts_total",
+					Help: "Total number of trie insertions",
+				},
+			),
+			TrieDeletes: promauto.NewCounter(
+				prometheus.CounterOpts{
+					Name: "autocomplete_trie_deletes_total",
+					Help: "Total number of trie deletions",
+				},
+			),
+			TrieSize: promauto.NewGauge(
+				prometheus.GaugeOpts{
+					Name: "autocomplete_trie_size",
+					Help: "Current size of the trie",
+				},
+			),
 
-		CacheHitsTotal: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "autocomplete_cache_hits_total",
-				Help: "Total number of cache hits",
-			},
-			[]string{"cache_type"},
-		),
+			// Fuzzy search metrics
+			FuzzySearches: promauto.NewCounter(
+				prometheus.CounterOpts{
+					Name: "autocomplete_fuzzy_searches_total",
+					Help: "Total number of fuzzy searches performed",
+				},
+			),
+			FuzzyMatches: promauto.NewCounter(
+				prometheus.CounterOpts{
+					Name: "autocomplete_fuzzy_matches_total",
+					Help: "Total number of fuzzy matches found",
+				},
+			),
 
-		CacheMissesTotal: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "autocomplete_cache_misses_total",
-				Help: "Total number of cache misses",
-			},
-			[]string{"cache_type"},
-		),
+			// Pipeline metrics
+			PipelineProcessed: promauto.NewCounterVec(
+				prometheus.CounterOpts{
+					Name: "autocomplete_pipeline_processed_total",
+					Help: "Total number of items processed by pipeline",
+				},
+				[]string{"stage"},
+			),
+			PipelineQueueSize: promauto.NewGauge(
+				prometheus.GaugeOpts{
+					Name: "autocomplete_pipeline_queue_size",
+					Help: "Current size of the pipeline queue",
+				},
+			),
+			PipelineLatency: promauto.NewHistogramVec(
+				prometheus.HistogramOpts{
+					Name:    "autocomplete_pipeline_latency_seconds",
+					Help:    "Pipeline processing latency",
+					Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5},
+				},
+				[]string{"stage"},
+			),
 
-		CacheOperations: promauto.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Name:    "autocomplete_cache_operation_duration_seconds",
-				Help:    "Duration of cache operations",
-				Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1},
-			},
-			[]string{"operation", "cache_type"},
-		),
-
-		TrieSearches: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "autocomplete_trie_searches_total",
-				Help: "Total number of trie searches",
-			},
-			[]string{"result_count"},
-		),
-
-		TrieInserts: promauto.NewCounter(
-			prometheus.CounterOpts{
-				Name: "autocomplete_trie_inserts_total",
-				Help: "Total number of trie insertions",
-			},
-		),
-
-		TrieDeletes: promauto.NewCounter(
-			prometheus.CounterOpts{
-				Name: "autocomplete_trie_deletes_total",
-				Help: "Total number of trie deletions",
-			},
-		),
-
-		TrieSize: promauto.NewGauge(
-			prometheus.GaugeOpts{
-				Name: "autocomplete_trie_size",
-				Help: "Current size of the trie (number of suggestions)",
-			},
-		),
-
-		FuzzySearches: promauto.NewCounter(
-			prometheus.CounterOpts{
-				Name: "autocomplete_fuzzy_searches_total",
-				Help: "Total number of fuzzy searches performed",
-			},
-		),
-
-		FuzzyMatches: promauto.NewCounter(
-			prometheus.CounterOpts{
-				Name: "autocomplete_fuzzy_matches_total",
-				Help: "Total number of fuzzy matches found",
-			},
-		),
-
-		PipelineProcessed: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "autocomplete_pipeline_processed_total",
-				Help: "Total number of pipeline items processed",
-			},
-			[]string{"stage"},
-		),
-
-		PipelineQueueSize: promauto.NewGauge(
-			prometheus.GaugeOpts{
-				Name: "autocomplete_pipeline_queue_size",
-				Help: "Current size of the pipeline queue",
-			},
-		),
-
-		PipelineLatency: promauto.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Name:    "autocomplete_pipeline_latency_seconds",
-				Help:    "Latency of pipeline processing",
-				Buckets: []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60},
-			},
-			[]string{"stage"},
-		),
-
-		ErrorsTotal: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "autocomplete_errors_total",
-				Help: "Total number of errors",
-			},
-			[]string{"type", "component"},
-		),
-	}
+			// Error metrics
+			ErrorsTotal: promauto.NewCounterVec(
+				prometheus.CounterOpts{
+					Name: "autocomplete_errors_total",
+					Help: "Total number of errors",
+				},
+				[]string{"component", "error_type"},
+			),
+		}
+	})
+	return metricsInstance
 }
 
 // RecordRequest records a request metric

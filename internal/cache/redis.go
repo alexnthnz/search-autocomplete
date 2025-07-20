@@ -9,14 +9,16 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/sirupsen/logrus"
 
+	"github.com/alexnthnz/search-autocomplete/internal/metrics"
 	"github.com/alexnthnz/search-autocomplete/pkg/models"
 )
 
 // RedisCache implements caching using Redis
 type RedisCache struct {
-	client *redis.Client
-	ttl    time.Duration
-	logger *logrus.Logger
+	client  *redis.Client
+	ttl     time.Duration
+	logger  *logrus.Logger
+	metrics *metrics.Metrics
 }
 
 // Config holds Redis configuration
@@ -29,7 +31,7 @@ type Config struct {
 }
 
 // NewRedisCache creates a new Redis cache instance
-func NewRedisCache(config Config, logger *logrus.Logger) *RedisCache {
+func NewRedisCache(config Config, logger *logrus.Logger, metricsInstance *metrics.Metrics) *RedisCache {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     fmt.Sprintf("%s:%d", config.Host, config.Port),
 		Password: config.Password,
@@ -46,30 +48,42 @@ func NewRedisCache(config Config, logger *logrus.Logger) *RedisCache {
 	logger.Info("Successfully connected to Redis")
 
 	return &RedisCache{
-		client: rdb,
-		ttl:    config.TTL,
-		logger: logger,
+		client:  rdb,
+		ttl:     config.TTL,
+		logger:  logger,
+		metrics: metricsInstance,
 	}
 }
 
 // Get retrieves suggestions from cache
 func (r *RedisCache) Get(ctx context.Context, query string) ([]models.Suggestion, bool) {
+	start := time.Now()
 	key := r.buildKey(query)
 
 	val, err := r.client.Get(ctx, key).Result()
+
+	// Record cache operation duration
+	r.metrics.RecordCacheOperation("get", "redis", time.Since(start))
+
 	if err == redis.Nil {
+		r.metrics.RecordCacheMiss("redis")
 		return nil, false // Cache miss
 	}
 	if err != nil {
 		r.logger.WithError(err).Error("Failed to get from cache")
+		r.metrics.RecordError("cache", "get_failed")
 		return nil, false
 	}
 
 	var suggestions []models.Suggestion
 	if err := json.Unmarshal([]byte(val), &suggestions); err != nil {
 		r.logger.WithError(err).Error("Failed to unmarshal cached suggestions")
+		r.metrics.RecordError("cache", "unmarshal_failed")
 		return nil, false
 	}
+
+	// Record cache hit
+	r.metrics.RecordCacheHit("redis")
 
 	// Update access time for LRU
 	r.client.Expire(ctx, key, r.ttl)
@@ -79,17 +93,24 @@ func (r *RedisCache) Get(ctx context.Context, query string) ([]models.Suggestion
 
 // Set stores suggestions in cache
 func (r *RedisCache) Set(ctx context.Context, query string, suggestions []models.Suggestion) error {
+	start := time.Now()
 	key := r.buildKey(query)
 
 	data, err := json.Marshal(suggestions)
 	if err != nil {
-		return fmt.Errorf("failed to marshal suggestions: %w", err)
+		r.metrics.RecordError("cache", "marshal_failed")
+		return err
 	}
 
 	err = r.client.Set(ctx, key, data, r.ttl).Err()
+
+	// Record cache operation duration
+	r.metrics.RecordCacheOperation("set", "redis", time.Since(start))
+
 	if err != nil {
 		r.logger.WithError(err).Error("Failed to set cache")
-		return fmt.Errorf("failed to set cache: %w", err)
+		r.metrics.RecordError("cache", "set_failed")
+		return err
 	}
 
 	return nil
@@ -97,8 +118,21 @@ func (r *RedisCache) Set(ctx context.Context, query string, suggestions []models
 
 // Delete removes a query from cache
 func (r *RedisCache) Delete(ctx context.Context, query string) error {
+	start := time.Now()
 	key := r.buildKey(query)
-	return r.client.Del(ctx, key).Err()
+
+	err := r.client.Del(ctx, key).Err()
+
+	// Record cache operation duration
+	r.metrics.RecordCacheOperation("delete", "redis", time.Since(start))
+
+	if err != nil {
+		r.logger.WithError(err).Error("Failed to delete from cache")
+		r.metrics.RecordError("cache", "delete_failed")
+		return err
+	}
+
+	return nil
 }
 
 // Clear removes all cached queries matching a pattern
@@ -168,9 +202,10 @@ func (r *RedisCache) Close() error {
 
 // InMemoryCache implements a simple in-memory cache as fallback
 type InMemoryCache struct {
-	data   map[string]cacheItem
-	ttl    time.Duration
-	logger *logrus.Logger
+	data    map[string]cacheItem
+	ttl     time.Duration
+	logger  *logrus.Logger
+	metrics *metrics.Metrics
 }
 
 type cacheItem struct {
@@ -179,11 +214,12 @@ type cacheItem struct {
 }
 
 // NewInMemoryCache creates a new in-memory cache
-func NewInMemoryCache(ttl time.Duration, logger *logrus.Logger) *InMemoryCache {
+func NewInMemoryCache(ttl time.Duration, logger *logrus.Logger, metricsInstance *metrics.Metrics) *InMemoryCache {
 	cache := &InMemoryCache{
-		data:   make(map[string]cacheItem),
-		ttl:    ttl,
-		logger: logger,
+		data:    make(map[string]cacheItem),
+		ttl:     ttl,
+		logger:  logger,
+		metrics: metricsInstance,
 	}
 
 	// Start cleanup routine
@@ -194,29 +230,49 @@ func NewInMemoryCache(ttl time.Duration, logger *logrus.Logger) *InMemoryCache {
 
 // Get retrieves suggestions from in-memory cache
 func (c *InMemoryCache) Get(ctx context.Context, query string) ([]models.Suggestion, bool) {
+	start := time.Now()
+
 	item, exists := c.data[query]
+
+	// Record cache operation duration
+	c.metrics.RecordCacheOperation("get", "memory", time.Since(start))
+
 	if !exists || time.Now().After(item.expiry) {
 		if exists {
 			delete(c.data, query) // Clean expired item
 		}
+		c.metrics.RecordCacheMiss("memory")
 		return nil, false
 	}
 
+	c.metrics.RecordCacheHit("memory")
 	return item.suggestions, true
 }
 
 // Set stores suggestions in in-memory cache
 func (c *InMemoryCache) Set(ctx context.Context, query string, suggestions []models.Suggestion) error {
+	start := time.Now()
+
 	c.data[query] = cacheItem{
 		suggestions: suggestions,
 		expiry:      time.Now().Add(c.ttl),
 	}
+
+	// Record cache operation duration
+	c.metrics.RecordCacheOperation("set", "memory", time.Since(start))
+
 	return nil
 }
 
 // Delete removes a query from in-memory cache
 func (c *InMemoryCache) Delete(ctx context.Context, query string) error {
+	start := time.Now()
+
 	delete(c.data, query)
+
+	// Record cache operation duration
+	c.metrics.RecordCacheOperation("delete", "memory", time.Since(start))
+
 	return nil
 }
 

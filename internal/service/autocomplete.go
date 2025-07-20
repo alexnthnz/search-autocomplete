@@ -9,6 +9,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/alexnthnz/search-autocomplete/internal/cache"
+	"github.com/alexnthnz/search-autocomplete/internal/metrics"
 	"github.com/alexnthnz/search-autocomplete/internal/trie"
 	"github.com/alexnthnz/search-autocomplete/pkg/models"
 	"github.com/alexnthnz/search-autocomplete/pkg/utils"
@@ -20,7 +21,7 @@ type AutocompleteService struct {
 	cache        cache.Cache
 	logger       *logrus.Logger
 	fuzzyMatcher *utils.FuzzyMatcher
-	metrics      *Metrics
+	metrics      *metrics.Metrics
 }
 
 // Config holds service configuration
@@ -32,24 +33,14 @@ type Config struct {
 	PersonalizedRec bool
 }
 
-// Metrics tracks service performance
-type Metrics struct {
-	TotalQueries int64
-	CacheHits    int64
-	CacheMisses  int64
-	AvgLatency   time.Duration
-	TrieQueries  int64
-	FuzzyQueries int64
-}
-
 // NewAutocompleteService creates a new autocomplete service
-func NewAutocompleteService(config Config, cache cache.Cache, logger *logrus.Logger) *AutocompleteService {
+func NewAutocompleteService(config Config, cache cache.Cache, logger *logrus.Logger, metrics *metrics.Metrics) *AutocompleteService {
 	service := &AutocompleteService{
-		trie:         trie.New(),
+		trie:         trie.NewWithMetrics(metrics),
 		cache:        cache,
 		logger:       logger,
 		fuzzyMatcher: utils.NewFuzzyMatcher(config.FuzzyThreshold),
-		metrics:      &Metrics{},
+		metrics:      metrics,
 	}
 
 	return service
@@ -59,8 +50,9 @@ func NewAutocompleteService(config Config, cache cache.Cache, logger *logrus.Log
 func (s *AutocompleteService) GetSuggestions(ctx context.Context, req models.AutocompleteRequest) (*models.AutocompleteResponse, error) {
 	start := time.Now()
 	defer func() {
-		s.metrics.TotalQueries++
-		s.metrics.AvgLatency = time.Since(start)
+		// Record request latency and count
+		latency := time.Since(start)
+		s.metrics.RecordRequest("autocomplete", "service", "200", latency)
 	}()
 
 	// Normalize query
@@ -87,10 +79,7 @@ func (s *AutocompleteService) GetSuggestions(ctx context.Context, req models.Aut
 		if cached, found := s.cache.Get(ctx, query); found {
 			suggestions = cached
 			source = "cache"
-			s.metrics.CacheHits++
 			s.logger.WithField("query", query).Debug("Cache hit")
-		} else {
-			s.metrics.CacheMisses++
 		}
 	}
 
@@ -98,7 +87,6 @@ func (s *AutocompleteService) GetSuggestions(ctx context.Context, req models.Aut
 	if len(suggestions) == 0 {
 		suggestions = s.trie.Search(query, req.Limit*2) // Get more for ranking
 		source = "trie"
-		s.metrics.TrieQueries++
 		s.logger.WithField("query", query).Debug("Trie search")
 
 		// If no exact matches and fuzzy is enabled, try fuzzy matching
@@ -106,7 +94,7 @@ func (s *AutocompleteService) GetSuggestions(ctx context.Context, req models.Aut
 			suggestions = s.performFuzzySearch(query, req.Limit*2)
 			if len(suggestions) > 0 {
 				source = "fuzzy"
-				s.metrics.FuzzyQueries++
+				s.metrics.RecordFuzzySearch()
 				s.logger.WithField("query", query).Debug("Fuzzy search")
 			}
 		}
@@ -116,6 +104,7 @@ func (s *AutocompleteService) GetSuggestions(ctx context.Context, req models.Aut
 			go func() {
 				if err := s.cache.Set(context.Background(), query, suggestions); err != nil {
 					s.logger.WithError(err).Error("Failed to cache suggestions")
+					s.metrics.RecordError("service", "cache_set_failed")
 				}
 			}()
 		}
@@ -192,7 +181,7 @@ func (s *AutocompleteService) DeleteSuggestion(term string) bool {
 }
 
 // GetStats returns service statistics
-func (s *AutocompleteService) GetStats() *Metrics {
+func (s *AutocompleteService) GetStats() *metrics.Metrics {
 	return s.metrics
 }
 
@@ -212,6 +201,9 @@ func (s *AutocompleteService) performFuzzySearch(query string, limit int) []mode
 	if len(query) > 1 {
 		shortened := query[:len(query)-1]
 		results := s.trie.Search(shortened, limit)
+		if len(results) > 0 {
+			s.metrics.RecordFuzzyMatch()
+		}
 		fuzzyResults = append(fuzzyResults, results...)
 	}
 
@@ -225,6 +217,9 @@ func (s *AutocompleteService) performFuzzySearch(query string, limit int) []mode
 		if strings.Contains(query, old) {
 			modified := strings.ReplaceAll(query, old, new)
 			results := s.trie.Search(modified, limit/2)
+			if len(results) > 0 {
+				s.metrics.RecordFuzzyMatch()
+			}
 			fuzzyResults = append(fuzzyResults, results...)
 		}
 	}

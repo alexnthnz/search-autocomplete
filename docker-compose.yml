@@ -1,19 +1,17 @@
-version: '3.8'
 services:
   autocomplete:
     build: .
     ports:
       - "8080:8080"
     environment:
-      - REDIS_ENABLED=true
-      - REDIS_HOST=redis
+      - REDIS_ENABLED=false  # Default to in-memory cache
       - CACHE_TTL=10m
-      - LOG_LEVEL=debug
-    depends_on:
-      - redis
+      - LOG_LEVEL=info
+      - ENABLE_CORS=true
     volumes:
       - ./data:/app/data
 
+  # Redis service - optional, enable by setting REDIS_ENABLED=true and adding depends_on
   redis:
     image: redis:7-alpine
     ports:

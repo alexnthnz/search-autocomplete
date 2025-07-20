@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -9,19 +10,32 @@ import (
 	"github.com/sirupsen/logrus"
 	"golang.org/x/time/rate"
 
+	"github.com/alexnthnz/search-autocomplete/internal/metrics"
+	"github.com/alexnthnz/search-autocomplete/internal/pipeline"
 	"github.com/alexnthnz/search-autocomplete/internal/service"
+	"github.com/alexnthnz/search-autocomplete/pkg/errors"
 	"github.com/alexnthnz/search-autocomplete/pkg/models"
+	"github.com/alexnthnz/search-autocomplete/pkg/utils"
 )
+
+var startTime time.Time
+
+func init() {
+	startTime = time.Now()
+}
 
 // Handler handles HTTP requests for the autocomplete API
 type Handler struct {
 	service     *service.AutocompleteService
 	logger      *logrus.Logger
 	rateLimiter *rate.Limiter
+	validator   *utils.QueryValidator
+	metrics     *metrics.Metrics
+	pipeline    *pipeline.DataPipeline
 }
 
 // NewHandler creates a new API handler
-func NewHandler(service *service.AutocompleteService, logger *logrus.Logger) *Handler {
+func NewHandler(service *service.AutocompleteService, pipeline *pipeline.DataPipeline, logger *logrus.Logger, metricsInstance *metrics.Metrics) *Handler {
 	// Rate limiter: 100 requests per second with burst of 200
 	limiter := rate.NewLimiter(rate.Limit(100), 200)
 
@@ -29,6 +43,9 @@ func NewHandler(service *service.AutocompleteService, logger *logrus.Logger) *Ha
 		service:     service,
 		logger:      logger,
 		rateLimiter: limiter,
+		validator:   utils.NewQueryValidator(),
+		metrics:     metricsInstance,
+		pipeline:    pipeline,
 	}
 }
 
@@ -36,20 +53,29 @@ func NewHandler(service *service.AutocompleteService, logger *logrus.Logger) *Ha
 func (h *Handler) AutocompleteHandler(c *gin.Context) {
 	// Rate limiting
 	if !h.rateLimiter.Allow() {
-		c.JSON(http.StatusTooManyRequests, gin.H{
-			"error": "Rate limit exceeded",
-		})
+		apiErr := errors.NewRateLimitError()
+		c.JSON(apiErr.HTTPStatus, apiErr)
 		return
 	}
 
 	// Parse query parameters
 	query := c.Query("q")
 	if query == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Query parameter 'q' is required",
-		})
+		apiErr := errors.NewValidationError("Query parameter 'q' is required", "Missing required parameter")
+		c.JSON(apiErr.HTTPStatus, apiErr)
 		return
 	}
+
+	// Validate and sanitize query
+	if err := h.validator.ValidateQuery(query); err != nil {
+		apiErr := errors.NewValidationError("Invalid query", err.Error())
+		h.metrics.RecordError("api", "validation_failed")
+		c.JSON(apiErr.HTTPStatus, apiErr)
+		return
+	}
+
+	// Sanitize the query
+	query = h.validator.SanitizeQuery(query)
 
 	// Parse optional parameters
 	limit := 10 // default
@@ -61,6 +87,23 @@ func (h *Handler) AutocompleteHandler(c *gin.Context) {
 
 	userID := c.Query("user_id")
 	sessionID := c.Query("session_id")
+
+	// Validate userID and sessionID if provided
+	if userID != "" {
+		if err := utils.ValidateUserID(userID); err != nil {
+			apiErr := errors.NewValidationError("Invalid user ID", err.Error())
+			c.JSON(apiErr.HTTPStatus, apiErr)
+			return
+		}
+	}
+
+	if sessionID != "" {
+		if err := utils.ValidateSessionID(sessionID); err != nil {
+			apiErr := errors.NewValidationError("Invalid session ID", err.Error())
+			c.JSON(apiErr.HTTPStatus, apiErr)
+			return
+		}
+	}
 
 	// Create request
 	req := models.AutocompleteRequest{
@@ -74,9 +117,9 @@ func (h *Handler) AutocompleteHandler(c *gin.Context) {
 	response, err := h.service.GetSuggestions(c.Request.Context(), req)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to get suggestions")
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Internal server error",
-		})
+		h.metrics.RecordError("api", "service_failed")
+		apiErr := errors.NewInternalError("Failed to process request", err)
+		c.JSON(apiErr.HTTPStatus, apiErr)
 		return
 	}
 
@@ -90,18 +133,44 @@ func (h *Handler) AutocompleteHandler(c *gin.Context) {
 func (h *Handler) AutocompletePostHandler(c *gin.Context) {
 	// Rate limiting
 	if !h.rateLimiter.Allow() {
-		c.JSON(http.StatusTooManyRequests, gin.H{
-			"error": "Rate limit exceeded",
-		})
+		apiErr := errors.NewRateLimitError()
+		c.JSON(apiErr.HTTPStatus, apiErr)
 		return
 	}
 
 	var req models.AutocompleteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid request body",
-		})
+		apiErr := errors.NewValidationError("Invalid request body", err.Error())
+		c.JSON(apiErr.HTTPStatus, apiErr)
 		return
+	}
+
+	// Validate and sanitize query
+	if err := h.validator.ValidateQuery(req.Query); err != nil {
+		apiErr := errors.NewValidationError("Invalid query", err.Error())
+		h.metrics.RecordError("api", "validation_failed")
+		c.JSON(apiErr.HTTPStatus, apiErr)
+		return
+	}
+
+	// Sanitize the query
+	req.Query = h.validator.SanitizeQuery(req.Query)
+
+	// Validate userID and sessionID if provided
+	if req.UserID != "" {
+		if err := utils.ValidateUserID(req.UserID); err != nil {
+			apiErr := errors.NewValidationError("Invalid user ID", err.Error())
+			c.JSON(apiErr.HTTPStatus, apiErr)
+			return
+		}
+	}
+
+	if req.SessionID != "" {
+		if err := utils.ValidateSessionID(req.SessionID); err != nil {
+			apiErr := errors.NewValidationError("Invalid session ID", err.Error())
+			c.JSON(apiErr.HTTPStatus, apiErr)
+			return
+		}
 	}
 
 	// Set default limit
@@ -116,9 +185,9 @@ func (h *Handler) AutocompletePostHandler(c *gin.Context) {
 	response, err := h.service.GetSuggestions(c.Request.Context(), req)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to get suggestions")
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Internal server error",
-		})
+		h.metrics.RecordError("api", "service_failed")
+		apiErr := errors.NewInternalError("Failed to process request", err)
+		c.JSON(apiErr.HTTPStatus, apiErr)
 		return
 	}
 
@@ -132,16 +201,21 @@ func (h *Handler) AutocompletePostHandler(c *gin.Context) {
 func (h *Handler) AddSuggestionHandler(c *gin.Context) {
 	var suggestion models.Suggestion
 	if err := c.ShouldBindJSON(&suggestion); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid request body",
-		})
+		apiErr := errors.NewValidationError("Invalid request body", err.Error())
+		c.JSON(apiErr.HTTPStatus, apiErr)
 		return
 	}
 
 	if suggestion.Term == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Term is required",
-		})
+		apiErr := errors.NewValidationError("Term is required", "Suggestion term cannot be empty")
+		c.JSON(apiErr.HTTPStatus, apiErr)
+		return
+	}
+
+	// Validate the term
+	if err := utils.ValidateTerm(suggestion.Term); err != nil {
+		apiErr := errors.NewValidationError("Invalid term", err.Error())
+		c.JSON(apiErr.HTTPStatus, apiErr)
 		return
 	}
 
@@ -155,9 +229,9 @@ func (h *Handler) AddSuggestionHandler(c *gin.Context) {
 
 	if err := h.service.AddSuggestion(suggestion); err != nil {
 		h.logger.WithError(err).Error("Failed to add suggestion")
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to add suggestion",
-		})
+		h.metrics.RecordError("api", "service_failed")
+		apiErr := errors.NewInternalError("Failed to add suggestion", err)
+		c.JSON(apiErr.HTTPStatus, apiErr)
 		return
 	}
 
@@ -171,31 +245,37 @@ func (h *Handler) AddSuggestionHandler(c *gin.Context) {
 func (h *Handler) BatchAddSuggestionsHandler(c *gin.Context) {
 	var suggestions []models.Suggestion
 	if err := c.ShouldBindJSON(&suggestions); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid request body",
-		})
+		apiErr := errors.NewValidationError("Invalid request body", err.Error())
+		c.JSON(apiErr.HTTPStatus, apiErr)
 		return
 	}
 
 	if len(suggestions) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "No suggestions provided",
-		})
+		apiErr := errors.NewValidationError("No suggestions provided", "Request body must contain at least one suggestion")
+		c.JSON(apiErr.HTTPStatus, apiErr)
 		return
 	}
 
 	if len(suggestions) > 1000 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Too many suggestions (max 1000)",
-		})
+		apiErr := errors.NewValidationError("Too many suggestions", "Maximum 1000 suggestions allowed per batch")
+		c.JSON(apiErr.HTTPStatus, apiErr)
 		return
+	}
+
+	// Validate all terms
+	for i, suggestion := range suggestions {
+		if err := utils.ValidateTerm(suggestion.Term); err != nil {
+			apiErr := errors.NewValidationError("Invalid term in batch", fmt.Sprintf("Suggestion %d: %s", i+1, err.Error()))
+			c.JSON(apiErr.HTTPStatus, apiErr)
+			return
+		}
 	}
 
 	if err := h.service.BatchAddSuggestions(suggestions); err != nil {
 		h.logger.WithError(err).Error("Failed to batch add suggestions")
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to add suggestions",
-		})
+		h.metrics.RecordError("api", "service_failed")
+		apiErr := errors.NewInternalError("Failed to add suggestions", err)
+		c.JSON(apiErr.HTTPStatus, apiErr)
 		return
 	}
 
@@ -209,25 +289,29 @@ func (h *Handler) BatchAddSuggestionsHandler(c *gin.Context) {
 func (h *Handler) UpdateFrequencyHandler(c *gin.Context) {
 	term := c.Param("term")
 	if term == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Term parameter is required",
-		})
+		apiErr := errors.NewValidationError("Term parameter is required", "URL path must include term parameter")
+		c.JSON(apiErr.HTTPStatus, apiErr)
+		return
+	}
+
+	// Validate the term
+	if err := utils.ValidateTerm(term); err != nil {
+		apiErr := errors.NewValidationError("Invalid term", err.Error())
+		c.JSON(apiErr.HTTPStatus, apiErr)
 		return
 	}
 
 	frequencyStr := c.Query("frequency")
 	if frequencyStr == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Frequency parameter is required",
-		})
+		apiErr := errors.NewValidationError("Frequency parameter is required", "Query parameter 'frequency' is required")
+		c.JSON(apiErr.HTTPStatus, apiErr)
 		return
 	}
 
 	frequency, err := strconv.ParseInt(frequencyStr, 10, 64)
 	if err != nil || frequency < 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid frequency value",
-		})
+		apiErr := errors.NewValidationError("Invalid frequency value", "Frequency must be a non-negative integer")
+		c.JSON(apiErr.HTTPStatus, apiErr)
 		return
 	}
 
@@ -244,17 +328,22 @@ func (h *Handler) UpdateFrequencyHandler(c *gin.Context) {
 func (h *Handler) DeleteSuggestionHandler(c *gin.Context) {
 	term := c.Param("term")
 	if term == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "Term parameter is required",
-		})
+		apiErr := errors.NewValidationError("Term parameter is required", "URL path must include term parameter")
+		c.JSON(apiErr.HTTPStatus, apiErr)
+		return
+	}
+
+	// Validate the term
+	if err := utils.ValidateTerm(term); err != nil {
+		apiErr := errors.NewValidationError("Invalid term", err.Error())
+		c.JSON(apiErr.HTTPStatus, apiErr)
 		return
 	}
 
 	deleted := h.service.DeleteSuggestion(term)
 	if !deleted {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "Suggestion not found",
-		})
+		apiErr := errors.NewNotFoundError("suggestion")
+		c.JSON(apiErr.HTTPStatus, apiErr)
 		return
 	}
 
@@ -266,7 +355,29 @@ func (h *Handler) DeleteSuggestionHandler(c *gin.Context) {
 
 // StatsHandler returns service statistics
 func (h *Handler) StatsHandler(c *gin.Context) {
-	serviceStats := h.service.GetStats()
+	// Get Prometheus metrics and convert to compatible format
+	serviceStats := gin.H{
+		"TotalQueries":      0, // We could extract from Prometheus metrics if needed
+		"CacheHits":         0, // We could extract from Prometheus metrics if needed
+		"CacheMisses":       0, // We could extract from Prometheus metrics if needed
+		"ActiveRequests":    h.metrics.ActiveRequests,
+		"RequestsTotal":     h.metrics.RequestsTotal,
+		"RequestDuration":   h.metrics.RequestDuration,
+		"CacheHitsTotal":    h.metrics.CacheHitsTotal,
+		"CacheMissesTotal":  h.metrics.CacheMissesTotal,
+		"CacheOperations":   h.metrics.CacheOperations,
+		"TrieSearches":      h.metrics.TrieSearches,
+		"TrieInserts":       h.metrics.TrieInserts,
+		"TrieDeletes":       h.metrics.TrieDeletes,
+		"TrieSize":          h.metrics.TrieSize,
+		"FuzzySearches":     h.metrics.FuzzySearches,
+		"FuzzyMatches":      h.metrics.FuzzyMatches,
+		"PipelineProcessed": h.metrics.PipelineProcessed,
+		"PipelineQueueSize": h.metrics.PipelineQueueSize,
+		"PipelineLatency":   h.metrics.PipelineLatency,
+		"ErrorsTotal":       h.metrics.ErrorsTotal,
+	}
+
 	trieStats := h.service.GetTrieStats()
 
 	stats := gin.H{
@@ -340,6 +451,22 @@ func (h *Handler) AuthMiddleware(apiKey string) gin.HandlerFunc {
 	}
 }
 
+// MetricsMiddleware records request metrics
+func (h *Handler) MetricsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		h.metrics.IncActiveRequests()
+
+		c.Next()
+
+		duration := time.Since(start)
+		status := strconv.Itoa(c.Writer.Status())
+
+		h.metrics.RecordRequest(c.Request.Method, c.FullPath(), status, duration)
+		h.metrics.DecActiveRequests()
+	}
+}
+
 // logQuery logs search queries for analytics
 func (h *Handler) logQuery(query, userID, sessionID, ipAddress string) {
 	searchLog := models.SearchLog{
@@ -357,9 +484,10 @@ func (h *Handler) logQuery(query, userID, sessionID, ipAddress string) {
 		"ip":         searchLog.IPAddress,
 	}).Info("Search query logged")
 
-	// In a real implementation, you would save this to a database or message queue
-	// for further processing and analytics
+	// Send to data pipeline for processing
+	if h.pipeline != nil {
+		if err := h.pipeline.LogQuery(searchLog); err != nil {
+			h.logger.WithError(err).Warn("Failed to send log to pipeline")
+		}
+	}
 }
-
-// startTime tracks when the server started
-var startTime = time.Now()

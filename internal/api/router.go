@@ -2,6 +2,7 @@ package api
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // SetupRouter configures and returns the HTTP router
@@ -19,6 +20,10 @@ func SetupRouter(handler *Handler, apiKey string, enableCORS bool) *gin.Engine {
 	}
 
 	router.Use(handler.LoggingMiddleware())
+	router.Use(handler.MetricsMiddleware())
+
+	// Prometheus metrics endpoint
+	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	// Public endpoints
 	v1 := router.Group("/api/v1")
